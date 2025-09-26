@@ -9,7 +9,8 @@ from formatter import format_markets
 from brs_fetcher import fetch_brs, BrsRateLimitError
 from brs_formatter import format_brs, BRS_KEYS
 from storage import get_user_prefs, set_user_mode, toggle_custom
-
+import dotenv
+dotenv.load_dotenv()
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 LABEL_PRICE_FA = os.environ.get("LABEL_PRICE_FA", "قیمت")

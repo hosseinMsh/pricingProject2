@@ -1,0 +1,41 @@
+name: Run Telegram Bot (Long Polling)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # keep alive ~5h (GH cap is ~6h)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare data dir
+        run: mkdir -p data
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run bot (polling)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          BRS_API_KEY: ${{ secrets.BRS_API_KEY }}
+          LABEL_PRICE_FA: ${{ secrets.LABEL_PRICE_FA }}
+        run: |
+          python - <<'PY'
+          import sys, os
+          sys.path.append('bot')
+          import main
+          if __name__ == '__main__':
+              main.run_bot()
+          PY

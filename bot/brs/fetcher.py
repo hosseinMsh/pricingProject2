@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import requests
 
 BRS_URL = "https://brsapi.ir/Api/Market/Gold_Currency.php"
-TIMEOUT = 8
+TIMEOUT = 30
 STORE_PATH = Path("data/brs_usage.json")
 DAILY_LIMIT = 1500
 

@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 import requests
@@ -8,6 +9,10 @@ BRS_URL = "https://brsapi.ir/Api/Market/Gold_Currency.php"
 TIMEOUT = 8
 STORE_PATH = Path("data/brs_usage.json")
 DAILY_LIMIT = 1500
+
+# in-memory cache to avoid burning limit
+_TTL = 60  # seconds
+_CACHE = {"ts": 0.0, "data": None}
 
 class BrsRateLimitError(Exception):
     pass
@@ -37,9 +42,18 @@ def _check_and_increment():
 def fetch_brs():
     key = os.environ.get("BRS_API_KEY")
     if not key:
-        return None  # optional: silently skip if no key set
+        return None
+
+    now = time.time()
+    if _CACHE["data"] is not None and (now - _CACHE["ts"] <= _TTL):
+        return _CACHE["data"]
+
+    # Only count when actually requesting upstream
     _check_and_increment()
     params = {"key": key}
     resp = requests.get(BRS_URL, params=params, timeout=TIMEOUT)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    _CACHE["data"] = data
+    _CACHE["ts"] = now
+    return data

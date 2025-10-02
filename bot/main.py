@@ -1,24 +1,47 @@
 import os
 import logging
-from telegram import Update, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    Update, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
+)
 
-from fetcher import fetch_markets
-from formatter import format_markets
-from brs_fetcher import fetch_brs, BrsRateLimitError
-from brs_formatter import format_brs, BRS_KEYS
+from bot.bitbin.fetcher import fetch_markets
+from bot.bitbin.formatter import format_markets
+from bot.brs.fetcher import BrsRateLimitError
+from bot.brs.formatter import format_brs, BRS_KEYS
 from storage import get_user_prefs, set_user_mode, toggle_custom
 import dotenv
 dotenv.load_dotenv()
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-LABEL_PRICE_FA = os.environ.get("LABEL_PRICE_FA", "قیمت")
+
+# All user-facing Persian labels/texts come from env to keep code ASCII-only.
+LABEL_PRICE_FA     = os.environ.get("LABEL_PRICE_FA", "Price")
+LABEL_MODES_FA     = os.environ.get("LABEL_MODES_FA", "Modes")
+LABEL_CUSTOMIZE_FA = os.environ.get("LABEL_CUSTOMIZE_FA", "Customize")
+LABEL_REFRESH_FA   = os.environ.get("LABEL_REFRESH_FA", "Refresh")
+WELCOME_TEXT       = os.environ.get(
+    "WELCOME_TEXT",
+    "Welcome! Use /gheymat or the bottom bar to view prices. You can change display mode too."
+)
 
 def _reply_kbd():
-    return ReplyKeyboardMarkup([[KeyboardButton(LABEL_PRICE_FA)]], resize_keyboard=True)
+    # Bottom persistent bar
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(LABEL_PRICE_FA)],
+            [KeyboardButton(LABEL_MODES_FA), KeyboardButton(LABEL_CUSTOMIZE_FA)],
+            [KeyboardButton(LABEL_REFRESH_FA)],
+        ],
+        resize_keyboard=True
+    )
 
-def _mode_menu(mode: str):
+def _mode_menu():
     kb = [
         [
             InlineKeyboardButton("All", callback_data="mode:all"),
@@ -31,7 +54,6 @@ def _mode_menu(mode: str):
     return InlineKeyboardMarkup(kb)
 
 def _custom_menu(selected: set[str], page: int = 0, page_size: int = 8):
-    # Build paginated toggle buttons from BRS_KEYS
     keys = sorted(BRS_KEYS.keys())
     start = page * page_size
     chunk = keys[start:start+page_size]
@@ -39,18 +61,23 @@ def _custom_menu(selected: set[str], page: int = 0, page_size: int = 8):
     for k in chunk:
         mark = "✅" if k in selected else "⬜️"
         rows.append([InlineKeyboardButton(f"{mark} {k}", callback_data=f"toggle:{k}")])
+
     nav = []
     if start > 0:
         nav.append(InlineKeyboardButton("Prev", callback_data=f"page:{page-1}"))
     if start + page_size < len(keys):
         nav.append(InlineKeyboardButton("Next", callback_data=f"page:{page+1}"))
-    rows.append(nav or [InlineKeyboardButton("Back", callback_data="custom:back")])
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton("Back", callback_data="custom:back")])
     return InlineKeyboardMarkup(rows)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Fancy welcome + bottom bar
     await update.message.reply_text(
-        "سلام! از /gheymat یا دکمهٔ زیر استفاده کن. می‌تونی حالت نمایش رو هم تغییر بدی.",
+        f"👋 {WELCOME_TEXT}\n\n"
+        "• Tap /gheymat or use the bottom bar.\n"
+        "• Switch modes (All/Important/Custom) and tailor your list.",
         reply_markup=_reply_kbd()
     )
 
@@ -60,8 +87,25 @@ async def gheymat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _send_prices(update, context, prefs["mode"], set(prefs["custom"]), show_menu=True)
 
 async def price_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message and update.message.text == LABEL_PRICE_FA:
+    txt = (update.message.text or "").strip()
+    if txt == LABEL_PRICE_FA:
         await gheymat(update, context)
+    elif txt == LABEL_MODES_FA:
+        chat_id = update.effective_chat.id
+        prefs = get_user_prefs(chat_id)
+        # Show current prices with inline mode menu
+        await _send_prices(update, context, prefs["mode"], set(prefs["custom"]), show_menu=True)
+    elif txt == LABEL_CUSTOMIZE_FA:
+        chat_id = update.effective_chat.id
+        prefs = get_user_prefs(chat_id)
+        await update.message.reply_text(
+            "Customize your list:",
+            reply_markup=_custom_menu(set(prefs["custom"]), page=0)
+        )
+    elif txt == LABEL_REFRESH_FA:
+        chat_id = update.effective_chat.id
+        prefs = get_user_prefs(chat_id)
+        await _send_prices(update, context, prefs["mode"], set(prefs["custom"]), show_menu=True)
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -79,15 +123,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "custom:open":
         await query.answer("Customize")
-        selected = set(prefs["custom"])
-        await query.edit_message_reply_markup(reply_markup=_custom_menu(selected, page=0))
+        await query.edit_message_reply_markup(reply_markup=_custom_menu(set(prefs["custom"]), page=0))
         return
 
     if data.startswith("toggle:"):
         key = data.split(":", 1)[1]
         sel = set(toggle_custom(chat_id, key))
         await query.answer(f"Toggled {key}")
-        # keep current page if present
         page = int(context.user_data.get("page", 0))
         await query.edit_message_reply_markup(reply_markup=_custom_menu(sel, page=page))
         return
@@ -95,8 +137,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("page:"):
         page = int(data.split(":", 1)[1])
         context.user_data["page"] = page
-        sel = set(prefs["custom"])
-        await query.edit_message_reply_markup(reply_markup=_custom_menu(sel, page=page))
+        await query.edit_message_reply_markup(reply_markup=_custom_menu(set(prefs["custom"]), page=page))
         return
 
     if data == "custom:back":
@@ -110,15 +151,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 async def _compose_message(mode: str, custom: set[str]):
-    # Bitpin (optional filtering via keep_codes if you want; here we keep default)
     bitpin = fetch_markets()
     bitpin_msg = format_markets(bitpin)
 
-    brs_msg = ""
     try:
-        from brs_fetcher import fetch_brs
         brs = fetch_brs()
-        brs_msg = format_brs(brs, filters=custom if mode=="custom" else None, mode=mode)
+        brs_msg = format_brs(brs, filters=custom if mode == "custom" else None, mode=mode)
     except BrsRateLimitError:
         brs_msg = "🏅 *Gold & Currency (BRS)*\nDaily request limit reached."
 
@@ -132,13 +170,13 @@ async def _send_prices(update_or_query, context, mode: str, custom: set[str], sh
         await update_or_query.message.reply_text(
             msg,
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_mode_menu(mode) if show_menu else _reply_kbd()
+            reply_markup=_mode_menu() if show_menu else _reply_kbd()
         )
     else:
         await update_or_query.edit_message_text(
             msg,
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_mode_menu(mode)
+            reply_markup=_mode_menu()
         )
 
 async def _edit_prices(query, context, mode: str, custom: set[str]):
@@ -147,11 +185,12 @@ async def _edit_prices(query, context, mode: str, custom: set[str]):
 def run_bot():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN env is required")
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.bot.set_my_commands([
-        BotCommand("gheymat", "Show prices (with menu)"),
-        BotCommand("start", "Start the bot"),
+        BotCommand("gheymat", "Show prices + menu"),
+        BotCommand("start", "Start"),
     ])
 
     app.add_handler(CommandHandler("start", start))

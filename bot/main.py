@@ -12,7 +12,7 @@ from telegram.ext import (
 
 from bot.bitbin.fetcher import fetch_markets
 from bot.bitbin.formatter import format_markets
-from bot.brs.fetcher import BrsRateLimitError
+from bot.brs.fetcher import BrsRateLimitError, fetch_brs
 from bot.brs.formatter import format_brs, BRS_KEYS
 from storage import get_user_prefs, set_user_mode, toggle_custom
 import dotenv
